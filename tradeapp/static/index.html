@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>RWA TradeApp</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}
+table{border-collapse:collapse;width:100%;margin-bottom:1.5rem}
+th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left}
+.summary{display:flex;gap:2rem;margin-bottom:1rem}
+#msg{min-height:1.5rem;font-weight:600}.err{color:#b00}.ok{color:#080}
+</style></head><body>
+<h1>Tokenized RWA Trading</h1>
+<p>Simulated exchange — no real funds.</p>
+<div class="summary"><div>Cash: $<b id="cash"></b></div><div>Equity: $<b id="equity"></b></div></div>
+<h2>Trade</h2>
+<form id="form">
+<select id="symbol"></select>
+<input id="qty" type="number" step="any" min="0" placeholder="Quantity" required>
+<button type="button" data-side="buy">Buy</button>
+<button type="button" data-side="sell">Sell</button>
+</form>
+<div id="msg"></div>
+<h2>Market</h2>
+<table><thead><tr><th>Symbol</th><th>Name</th><th>Category</th><th>Price</th></tr></thead><tbody id="market"></tbody></table>
+<h2>Positions</h2>
+<table><thead><tr><th>Symbol</th><th>Quantity</th><th>Value</th></tr></thead><tbody id="positions"></tbody></table>
+<h2>Recent trades</h2>
+<table><thead><tr><th>Side</th><th>Symbol</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody id="trades"></tbody></table>
+<script>
+const $=id=>document.getElementById(id);
+function rows(tbody,items,keys){
+  tbody.replaceChildren(...items.map(it=>{
+    const tr=document.createElement("tr");
+    keys.forEach(k=>{const td=document.createElement("td");td.textContent=it[k];tr.appendChild(td)});
+    return tr}));
+}
+function render(s){
+  $("cash").textContent=s.cash;$("equity").textContent=s.equity;
+  const sel=$("symbol"),cur=sel.value;
+  if(!sel.options.length)s.assets.forEach(a=>sel.add(new Option(a.symbol+" – "+a.name,a.symbol)));
+  sel.value=cur||sel.value;
+  rows($("market"),s.assets,["symbol","name","category","price"]);
+  rows($("positions"),s.positions,["symbol","quantity","value"]);
+  rows($("trades"),s.trades,["side","symbol","quantity","price","total"]);
+}
+async function load(){render(await (await fetch("/api/state")).json())}
+document.querySelectorAll("button[data-side]").forEach(b=>b.onclick=async()=>{
+  if(!$("form").reportValidity())return;
+  const r=await fetch("/api/trade",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({side:b.dataset.side,symbol:$("symbol").value,quantity:$("qty").value})});
+  const j=await r.json(),m=$("msg");
+  if(r.ok){m.className="ok";m.textContent=`${j.trade.side} ${j.trade.quantity} ${j.trade.symbol} @ ${j.trade.price}`;render(j.state)}
+  else{m.className="err";m.textContent=j.error}
+});
+load();
+</script></body></html>
