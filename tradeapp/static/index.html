@@ -1,55 +1,169 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>RWA TradeApp</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}
-table{border-collapse:collapse;width:100%;margin-bottom:1.5rem}
-th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left}
-.summary{display:flex;gap:2rem;margin-bottom:1rem}
-#msg{min-height:1.5rem;font-weight:600}.err{color:#b00}.ok{color:#080}
-</style></head><body>
-<h1>Tokenized RWA Trading</h1>
-<p>Simulated exchange — no real funds.</p>
-<div class="summary"><div>Cash: $<b id="cash"></b></div><div>Equity: $<b id="equity"></b></div></div>
-<h2>Trade</h2>
-<form id="form">
-<select id="symbol"></select>
-<input id="qty" type="number" step="any" min="0" placeholder="Quantity" required>
-<button type="button" data-side="buy">Buy</button>
-<button type="button" data-side="sell">Sell</button>
-</form>
-<div id="msg"></div>
-<h2>Market</h2>
-<table><thead><tr><th>Symbol</th><th>Name</th><th>Category</th><th>Price</th></tr></thead><tbody id="market"></tbody></table>
-<h2>Positions</h2>
-<table><thead><tr><th>Symbol</th><th>Quantity</th><th>Value</th></tr></thead><tbody id="positions"></tbody></table>
-<h2>Recent trades</h2>
-<table><thead><tr><th>Side</th><th>Symbol</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody id="trades"></tbody></table>
-<script>
-const $=id=>document.getElementById(id);
-function rows(tbody,items,keys){
-  tbody.replaceChildren(...items.map(it=>{
-    const tr=document.createElement("tr");
-    keys.forEach(k=>{const td=document.createElement("td");td.textContent=it[k];tr.appendChild(td)});
-    return tr}));
-}
-function render(s){
-  $("cash").textContent=s.cash;$("equity").textContent=s.equity;
-  const sel=$("symbol"),cur=sel.value;
-  if(!sel.options.length)s.assets.forEach(a=>sel.add(new Option(a.symbol+" – "+a.name,a.symbol)));
-  sel.value=cur||sel.value;
-  rows($("market"),s.assets,["symbol","name","category","price"]);
-  rows($("positions"),s.positions,["symbol","quantity","value"]);
-  rows($("trades"),s.trades,["side","symbol","quantity","price","total"]);
-}
-async function load(){render(await (await fetch("/api/state")).json())}
-document.querySelectorAll("button[data-side]").forEach(b=>b.onclick=async()=>{
-  if(!$("form").reportValidity())return;
-  const r=await fetch("/api/trade",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({side:b.dataset.side,symbol:$("symbol").value,quantity:$("qty").value})});
-  const j=await r.json(),m=$("msg");
-  if(r.ok){m.className="ok";m.textContent=`${j.trade.side} ${j.trade.quantity} ${j.trade.symbol} @ ${j.trade.price}`;render(j.state)}
-  else{m.className="err";m.textContent=j.error}
-});
-load();
-</script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f4f6f1">
+  <title>TradeApp | Solana account</title>
+  <style>
+    :root{color-scheme:light;--paper:#f4f6f1;--ink:#192720;--muted:#65736b;--line:#d6ded7;--green:#176b4b;--green-dark:#104b36;--lime:#d9ef8b;--white:#fff;--warning:#fff3d2}
+    *{box-sizing:border-box}
+    body{margin:0;background-color:var(--paper);background-image:linear-gradient(#dce5dc55 1px,transparent 1px),linear-gradient(90deg,#dce5dc55 1px,transparent 1px);background-size:32px 32px;color:var(--ink);font-family:Georgia,"Times New Roman",serif}
+    button,input{font:inherit}
+    [hidden]{display:none!important}
+    .topbar{min-height:68px;padding:0 clamp(20px,6vw,84px);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:#f4f6f1ed}
+    .brand{color:var(--ink);font:700 15px/1.2 "Trebuchet MS",sans-serif;letter-spacing:0;text-decoration:none}
+    .brand-mark{display:inline-grid;place-items:center;width:25px;height:25px;margin-right:9px;background:var(--green);color:var(--lime);vertical-align:middle}
+    .network{font:700 10px/1 "Trebuchet MS",sans-serif;color:var(--muted);text-transform:uppercase}
+    main{width:min(100% - 40px,980px);margin:clamp(44px,9vh,100px) auto 80px}
+    .eyebrow{margin:0 0 14px;color:var(--green);font:700 11px/1.2 "Trebuchet MS",sans-serif;text-transform:uppercase}
+    h1{max-width:680px;margin:0;font-size:clamp(38px,7vw,64px);font-weight:400;line-height:1.02;letter-spacing:0}
+    .intro{max-width:550px;margin:18px 0 0;color:#536158;font-size:17px;line-height:1.6}
+    .auth-area{display:grid;grid-template-columns:minmax(220px,1fr) minmax(300px,420px);gap:clamp(34px,8vw,100px);align-items:start;margin-top:56px}
+    .form-panel{border-top:2px solid var(--ink);padding-top:18px}
+    .mode-switch{display:flex;gap:22px;margin-bottom:28px;border-bottom:1px solid var(--line)}
+    .mode-switch button{padding:0 0 12px;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;background:transparent;color:var(--muted);font:700 13px "Trebuchet MS",sans-serif;cursor:pointer}
+    .mode-switch button[aria-selected=true]{border-color:var(--green);color:var(--green-dark)}
+    label{display:block;margin:18px 0 7px;font:700 12px "Trebuchet MS",sans-serif}
+    input{width:100%;height:48px;padding:0 13px;border:1px solid #aebbb0;border-radius:2px;background:var(--white);color:var(--ink);font:15px "Trebuchet MS",sans-serif}
+    input:focus{outline:2px solid var(--green);outline-offset:1px}
+    .primary{width:100%;min-height:48px;margin-top:23px;border:0;border-radius:2px;background:var(--green);color:white;font:700 13px "Trebuchet MS",sans-serif;cursor:pointer}
+    .primary:hover{background:var(--green-dark)}
+    .message{min-height:24px;margin:12px 0 0;color:#a12d28;font:13px/1.5 "Trebuchet MS",sans-serif}
+    .security-note{margin:18px 0 0;color:var(--muted);font:12px/1.6 "Trebuchet MS",sans-serif}
+    .wallet-area{margin-top:56px}
+    .wallet-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:19px}
+    .wallet-head h1{font-size:clamp(34px,6vw,54px)}
+    .logout{border:1px solid var(--line);padding:10px 14px;background:var(--white);color:var(--ink);font:700 12px "Trebuchet MS",sans-serif;cursor:pointer}
+    .account-email{margin:10px 0 0;color:var(--muted);font:13px "Trebuchet MS",sans-serif}
+    .wallet-label{margin:34px 0 12px;color:var(--green);font:700 11px "Trebuchet MS",sans-serif;text-transform:uppercase}
+    .address-row{display:flex;align-items:center;gap:14px;max-width:780px;padding:18px;background:var(--white);border:1px solid var(--line)}
+    .address{min-width:0;flex:1;margin:0;overflow-wrap:anywhere;color:var(--ink);font:14px/1.65 monospace}
+    .copy{flex:none;width:42px;height:42px;border:1px solid var(--line);background:var(--paper);color:var(--green-dark);font-size:18px;cursor:pointer}
+    .copy:focus-visible,.logout:focus-visible,.primary:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+    .wallet-warning{max-width:780px;margin-top:22px;padding:15px 17px;border-left:3px solid #bd8b21;background:var(--warning);color:#52441f;font:13px/1.6 "Trebuchet MS",sans-serif}
+    .wallet-warning strong{display:block;margin-bottom:3px}
+    @media(max-width:700px){main{margin-top:54px}.auth-area{grid-template-columns:1fr;gap:34px;margin-top:38px}.auth-copy{max-width:540px}.wallet-area{margin-top:38px}.wallet-head{align-items:flex-start}.address-row{align-items:flex-start;padding:13px}.address{font-size:12px}.copy{width:38px;height:38px}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">T</span>TRADEAPP</a>
+    <span class="network">Solana wallet access</span>
+  </header>
+  <main>
+    <section id="auth-view" class="auth-area" aria-labelledby="auth-title">
+      <div class="auth-copy">
+        <p class="eyebrow">Your account, on Solana</p>
+        <h1 id="auth-title">A clearer way into your wallet.</h1>
+        <p class="intro">Create an account to receive your unique Solana wallet address.</p>
+      </div>
+      <div class="form-panel">
+        <div class="mode-switch" role="tablist" aria-label="Account access">
+          <button id="login-tab" type="button" role="tab" aria-selected="true" data-mode="login">Sign in</button>
+          <button id="signup-tab" type="button" role="tab" aria-selected="false" data-mode="signup">Create account</button>
+        </div>
+        <form id="auth-form">
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button id="submit-button" class="primary" type="submit">Sign in</button>
+          <p id="auth-message" class="message" role="status" aria-live="polite"></p>
+        </form>
+        <p id="password-note" class="security-note" hidden>Your password encrypts your wallet key. Password recovery is not available yet.</p>
+      </div>
+    </section>
+    <section id="wallet-view" class="wallet-area" aria-labelledby="wallet-title" hidden>
+      <div class="wallet-head">
+        <div>
+          <p class="eyebrow">Account ready</p>
+          <h1 id="wallet-title">Your Solana address.</h1>
+          <p id="account-email" class="account-email"></p>
+        </div>
+        <button id="logout-button" class="logout" type="button">Sign out</button>
+      </div>
+      <p class="wallet-label">Public wallet address</p>
+      <div class="address-row">
+        <p id="wallet-address" class="address"></p>
+        <button id="copy-button" class="copy" type="button" aria-label="Copy wallet address" title="Copy wallet address">⧉</button>
+      </div>
+      <p id="copy-message" class="security-note" role="status" aria-live="polite"></p>
+      <aside class="wallet-warning"><strong>Deposits are not active yet.</strong>This address is generated for Solana, but deposit monitoring and transfers have not been configured. Do not send funds until those features are enabled.</aside>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let mode = "login";
+
+    function setMode(nextMode) {
+      mode = nextMode;
+      const creating = mode === "signup";
+      $("login-tab").setAttribute("aria-selected", String(!creating));
+      $("signup-tab").setAttribute("aria-selected", String(creating));
+      $("submit-button").textContent = creating ? "Create account" : "Sign in";
+      $("password").autocomplete = creating ? "new-password" : "current-password";
+      $("password").minLength = creating ? 12 : 1;
+      $("password-note").hidden = !creating;
+      $("auth-message").textContent = "";
+    }
+
+    function showWallet(user) {
+      $("auth-view").hidden = true;
+      $("wallet-view").hidden = false;
+      $("account-email").textContent = user.email;
+      $("wallet-address").textContent = user.walletAddress;
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Request failed");
+      return result;
+    }
+
+    document.querySelectorAll("[data-mode]").forEach((button) => {
+      button.addEventListener("click", () => setMode(button.dataset.mode));
+    });
+
+    $("auth-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = $("auth-message");
+      message.textContent = "";
+      try {
+        const user = await request(`/api/auth/${mode}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: $("email").value, password: $("password").value }),
+        });
+        showWallet(user);
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    });
+
+    $("logout-button").addEventListener("click", async () => {
+      try {
+        await request("/api/auth/logout", { method: "POST" });
+        $("wallet-view").hidden = true;
+        $("auth-view").hidden = false;
+        $("auth-form").reset();
+        setMode("login");
+      } catch (error) {
+        $("copy-message").textContent = error.message;
+      }
+    });
+
+    $("copy-button").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText($("wallet-address").textContent);
+        $("copy-message").textContent = "Address copied.";
+      } catch {
+        $("copy-message").textContent = "Clipboard access is unavailable in this browser.";
+      }
+    });
+
+    request("/api/auth/me").then(showWallet).catch(() => {});
+  </script>
+</body>
+</html>
