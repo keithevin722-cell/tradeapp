@@ -31,6 +31,15 @@
     .primary:hover{background:var(--green-dark)}
     .message{min-height:24px;margin:12px 0 0;color:#a12d28;font:13px/1.5 "Trebuchet MS",sans-serif}
     .security-note{margin:18px 0 0;color:var(--muted);font:12px/1.6 "Trebuchet MS",sans-serif}
+    .recover-link,.back-link{display:inline-block;margin-top:8px;padding:0;border:0;background:transparent;color:var(--green-dark);font:700 12px "Trebuchet MS",sans-serif;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+    .recovery-view{max-width:680px;margin:clamp(44px,9vh,100px) auto 80px}
+    .recovery-view h1{font-size:clamp(36px,6vw,54px)}
+    .recovery-code{margin:24px 0 14px;padding:18px;background:var(--white);border:1px solid var(--line);color:var(--ink);font:15px/1.6 monospace;overflow-wrap:anywhere;user-select:all}
+    .recovery-instructions{max-width:580px;color:#536158;font:14px/1.65 "Trebuchet MS",sans-serif}
+    .check-row{display:flex;align-items:center;gap:10px;margin:22px 0 0;font:13px/1.5 "Trebuchet MS",sans-serif}
+    input[type=checkbox]{width:17px;height:17px;flex:none;margin:0;accent-color:var(--green)}
+    .recovery-view .primary{max-width:300px}
+    .delivery-status{margin:18px 0 0;color:var(--green-dark);font:13px/1.6 "Trebuchet MS",sans-serif}
     .wallet-area{margin-top:56px}
     .wallet-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:19px}
     .wallet-head h1{font-size:clamp(34px,6vw,54px)}
@@ -71,8 +80,31 @@
           <button id="submit-button" class="primary" type="submit">Sign in</button>
           <p id="auth-message" class="message" role="status" aria-live="polite"></p>
         </form>
-        <p id="password-note" class="security-note" hidden>Your password encrypts your wallet key. Password recovery is not available yet.</p>
+        <button id="forgot-button" class="recover-link" type="button">Forgot password?</button>
+        <form id="reset-form" hidden>
+          <label for="reset-email">Email address</label>
+          <input id="reset-email" name="email" type="email" autocomplete="email" maxlength="254" required>
+          <label for="recovery-code-input">Recovery code</label>
+          <input id="recovery-code-input" name="recoveryCode" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+          <label for="new-password">New password</label>
+          <input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="12" required>
+          <button class="primary" type="submit">Reset password</button>
+          <p id="reset-message" class="message" role="status" aria-live="polite"></p>
+          <button id="back-button" class="back-link" type="button">Back to sign in</button>
+        </form>
+        <p id="password-note" class="security-note" hidden>A recovery code will be emailed after signup, or shown here if email delivery is not configured.</p>
       </div>
+    </section>
+    <section id="recovery-view" class="recovery-view" aria-labelledby="recovery-title" hidden>
+      <p class="eyebrow">Save this code now</p>
+      <h1 id="recovery-title">Your recovery key.</h1>
+      <p id="recovery-delivery" class="delivery-status" role="status" aria-live="polite"></p>
+      <p class="recovery-instructions">Anyone with your email and this code can reset your password and take control of the wallet. It will be replaced after every password reset.</p>
+      <pre id="recovery-code" class="recovery-code" aria-label="One-time recovery code"></pre>
+      <button id="copy-recovery" class="logout" type="button">Copy recovery code</button>
+      <label class="check-row"><input id="recovery-saved" type="checkbox"><span id="recovery-saved-label">I have stored this recovery code somewhere safe</span></label>
+      <button id="continue-button" class="primary" type="button" disabled>Continue to wallet</button>
+      <p id="recovery-message" class="security-note" role="status" aria-live="polite"></p>
     </section>
     <section id="wallet-view" class="wallet-area" aria-labelledby="wallet-title" hidden>
       <div class="wallet-head">
@@ -95,6 +127,8 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let mode = "login";
+    let pendingAccount = null;
+    let pendingPassword = null;
 
     function setMode(nextMode) {
       mode = nextMode;
@@ -105,6 +139,10 @@
       $("password").autocomplete = creating ? "new-password" : "current-password";
       $("password").minLength = creating ? 12 : 1;
       $("password-note").hidden = !creating;
+      $("auth-form").hidden = false;
+      $("reset-form").hidden = true;
+      $("forgot-button").hidden = creating;
+      document.querySelector(".mode-switch").hidden = false;
       $("auth-message").textContent = "";
     }
 
@@ -113,6 +151,27 @@
       $("wallet-view").hidden = false;
       $("account-email").textContent = user.email;
       $("wallet-address").textContent = user.walletAddress;
+    }
+
+    function showRecoveryCode(result, password) {
+      pendingAccount = { email: result.email, walletAddress: result.walletAddress };
+      pendingPassword = password;
+      $("auth-view").hidden = true;
+      $("wallet-view").hidden = true;
+      $("recovery-view").hidden = false;
+      const emailSent = result.recoveryEmailSent === true;
+      $("recovery-delivery").textContent = emailSent
+        ? `Recovery code sent to ${result.email}. Check your spam folder if needed.`
+        : "Email delivery is unavailable. Save the recovery code shown below.";
+      $("recovery-code").textContent = result.recoveryCode || "";
+      $("recovery-code").hidden = emailSent;
+      $("copy-recovery").hidden = emailSent;
+      $("recovery-saved-label").textContent = emailSent
+        ? "I received and saved the recovery code from email"
+        : "I have stored this recovery code somewhere safe";
+      $("recovery-saved").checked = false;
+      $("continue-button").disabled = true;
+      $("recovery-message").textContent = "";
     }
 
     async function request(path, options = {}) {
@@ -126,6 +185,17 @@
       button.addEventListener("click", () => setMode(button.dataset.mode));
     });
 
+    $("forgot-button").addEventListener("click", () => {
+      $("reset-email").value = $("email").value;
+      $("auth-form").hidden = true;
+      $("forgot-button").hidden = true;
+      document.querySelector(".mode-switch").hidden = true;
+      $("reset-form").hidden = false;
+      $("reset-message").textContent = "";
+    });
+
+    $("back-button").addEventListener("click", () => setMode("login"));
+
     $("auth-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const message = $("auth-message");
@@ -136,7 +206,61 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email: $("email").value, password: $("password").value }),
         });
+        if (mode === "signup") showRecoveryCode(user, $("password").value);
+        else showWallet(user);
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    });
+
+    $("reset-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = $("reset-message");
+      message.textContent = "";
+      try {
+        const result = await request("/api/auth/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: $("reset-email").value,
+            recoveryCode: $("recovery-code-input").value,
+            newPassword: $("new-password").value,
+          }),
+        });
+        showRecoveryCode(result, $("new-password").value);
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    });
+
+    $("recovery-saved").addEventListener("change", () => {
+      $("continue-button").disabled = !$("recovery-saved").checked;
+    });
+
+    $("copy-recovery").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText($("recovery-code").textContent);
+        $("recovery-message").textContent = "Recovery code copied.";
+      } catch {
+        $("recovery-message").textContent = "Clipboard access is unavailable in this browser.";
+      }
+    });
+
+    $("continue-button").addEventListener("click", async () => {
+      const message = $("recovery-message");
+      try {
+        const user = await request("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: pendingAccount.email, password: pendingPassword }),
+        });
+        $("recovery-view").hidden = true;
+        $("recovery-code").textContent = "";
+        $("recovery-code").hidden = false;
+        $("copy-recovery").hidden = false;
         showWallet(user);
+        pendingAccount = null;
+        pendingPassword = null;
       } catch (error) {
         message.textContent = error.message;
       }

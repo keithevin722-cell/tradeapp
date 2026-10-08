@@ -7,6 +7,7 @@ import sqlite3
 import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 from solders.keypair import Keypair
 
 PASSWORD_ITERATIONS = 600_000
@@ -68,6 +69,9 @@ class AccountStore:
                     wallet_salt BLOB NOT NULL,
                     wallet_nonce BLOB NOT NULL,
                     encrypted_secret_key BLOB NOT NULL,
+                    recovery_salt BLOB,
+                    recovery_nonce BLOB,
+                    recovery_encrypted_secret_key BLOB,
                     wallet_address TEXT NOT NULL,
                     created_at INTEGER NOT NULL
                 );
@@ -78,6 +82,12 @@ class AccountStore:
                 );
                 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
             """)
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(users)")
+            }
+            for name in ("recovery_salt", "recovery_nonce", "recovery_encrypted_secret_key"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE users ADD COLUMN {name} BLOB")
 
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=30)
@@ -98,21 +108,35 @@ class AccountStore:
         encrypted_secret = AESGCM(wallet_key).encrypt(
             nonce, keypair.to_bytes(), email.encode("utf-8")
         )
+        recovery_code = secrets.token_urlsafe(32)
+        recovery_salt = secrets.token_bytes(16)
+        recovery_key = _derive(recovery_code, recovery_salt)
+        recovery_nonce = secrets.token_bytes(12)
+        recovery_encrypted_secret = AESGCM(recovery_key).encrypt(
+            recovery_nonce, keypair.to_bytes(), email.encode("utf-8")
+        )
 
         try:
             with self._connect() as connection:
                 connection.execute(
                     """INSERT INTO users (
                         email, password_salt, password_hash, wallet_salt,
-                        wallet_nonce, encrypted_secret_key, wallet_address, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        wallet_nonce, encrypted_secret_key, recovery_salt,
+                        recovery_nonce, recovery_encrypted_secret_key,
+                        wallet_address, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (email, password_salt, password_hash, wallet_salt, nonce,
-                     encrypted_secret, str(keypair.pubkey()), int(time.time())),
+                     encrypted_secret, recovery_salt, recovery_nonce,
+                     recovery_encrypted_secret, str(keypair.pubkey()), int(time.time())),
                 )
         except sqlite3.IntegrityError as error:
             raise DuplicateAccountError("an account with this email already exists") from error
 
-        return {"email": email, "walletAddress": str(keypair.pubkey())}
+        return {
+            "email": email,
+            "walletAddress": str(keypair.pubkey()),
+            "recoveryCode": recovery_code,
+        }
 
     def login(self, email, password):
         email = _email(email)
@@ -138,6 +162,72 @@ class AccountStore:
         if row is None:
             return None
         return {"email": row["email"], "walletAddress": row["wallet_address"]}
+
+    def reset_password(self, email, recovery_code, new_password):
+        email = _email(email)
+        new_password = _password(new_password)
+        if not isinstance(recovery_code, str) or not 32 <= len(recovery_code) <= 128:
+            raise InvalidCredentialsError("email or recovery code is incorrect")
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT wallet_address, recovery_salt, recovery_nonce,
+                          recovery_encrypted_secret_key
+                   FROM users WHERE email = ?""",
+                (email,),
+            ).fetchone()
+        if row is None or row["recovery_salt"] is None:
+            raise InvalidCredentialsError("email or recovery code is incorrect")
+
+        recovery_key = _derive(recovery_code, row["recovery_salt"])
+        try:
+            secret_key = AESGCM(recovery_key).decrypt(
+                row["recovery_nonce"],
+                row["recovery_encrypted_secret_key"],
+                email.encode("utf-8"),
+            )
+        except InvalidTag as error:
+            raise InvalidCredentialsError("email or recovery code is incorrect") from error
+
+        keypair = Keypair.from_bytes(secret_key)
+        if str(keypair.pubkey()) != row["wallet_address"]:
+            raise InvalidCredentialsError("email or recovery code is incorrect")
+
+        password_salt = secrets.token_bytes(16)
+        password_hash = _derive(new_password, password_salt)
+        wallet_salt = secrets.token_bytes(16)
+        wallet_key = _derive(new_password, wallet_salt)
+        wallet_nonce = secrets.token_bytes(12)
+        encrypted_secret = AESGCM(wallet_key).encrypt(
+            wallet_nonce, secret_key, email.encode("utf-8")
+        )
+
+        new_recovery_code = secrets.token_urlsafe(32)
+        recovery_salt = secrets.token_bytes(16)
+        recovery_key = _derive(new_recovery_code, recovery_salt)
+        recovery_nonce = secrets.token_bytes(12)
+        recovery_encrypted_secret = AESGCM(recovery_key).encrypt(
+            recovery_nonce, secret_key, email.encode("utf-8")
+        )
+
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE users SET password_salt = ?, password_hash = ?,
+                          wallet_salt = ?, wallet_nonce = ?, encrypted_secret_key = ?,
+                          recovery_salt = ?, recovery_nonce = ?,
+                          recovery_encrypted_secret_key = ?
+                   WHERE email = ?""",
+                (password_salt, password_hash, wallet_salt, wallet_nonce,
+                 encrypted_secret, recovery_salt, recovery_nonce,
+                 recovery_encrypted_secret, email),
+            )
+            connection.execute("DELETE FROM sessions WHERE email = ?", (email,))
+
+        return {
+            "email": email,
+            "walletAddress": row["wallet_address"],
+            "recoveryCode": new_recovery_code,
+        }
 
     def create_session(self, email):
         token = secrets.token_urlsafe(32)

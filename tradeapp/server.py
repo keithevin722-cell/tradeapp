@@ -16,11 +16,12 @@ from .accounts import (
     InvalidCredentialsError,
     SESSION_TTL,
 )
+from .emailer import EmailDeliveryError, RecoveryEmailer
 
 INDEX = Path(__file__).parent / "static" / "index.html"
 
 
-def make_handler(accounts):
+def make_handler(accounts, mailer=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype="application/json", headers=()):
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -60,6 +61,20 @@ def make_handler(accounts):
                 raise ValueError("invalid request")
             return body
 
+        def _deliver_recovery_code(self, user):
+            delivered = False
+            if mailer is not None:
+                try:
+                    delivered = mailer.send_recovery_code(
+                        user["email"], user["recoveryCode"]
+                    )
+                except EmailDeliveryError:
+                    print("TradeApp recovery email delivery failed", file=sys.stderr)
+            user["recoveryEmailSent"] = delivered
+            if delivered:
+                user.pop("recoveryCode", None)
+            return user
+
         def do_GET(self):
             if self.path in ("/", "/index.html"):
                 self._send(200, INDEX.read_bytes(), "text/html; charset=utf-8")
@@ -77,24 +92,37 @@ def make_handler(accounts):
                 accounts.delete_session(self._session_token())
                 expired_cookie = self._session_cookie("", 0)
                 return self._send(200, {"ok": True}, headers=(expired_cookie,))
-            if self.path not in ("/api/auth/signup", "/api/auth/login"):
+            if self.path not in (
+                "/api/auth/signup", "/api/auth/login", "/api/auth/reset-password"
+            ):
                 return self._send(404, {"error": "not found"})
             try:
                 body = self._read_json()
                 if self.path == "/api/auth/signup":
                     user = accounts.signup(body.get("email"), body.get("password"))
                     code = 201
+                elif self.path == "/api/auth/reset-password":
+                    user = accounts.reset_password(
+                        body.get("email"), body.get("recoveryCode"), body.get("newPassword")
+                    )
+                    code = 200
                 else:
                     user = accounts.login(body.get("email"), body.get("password"))
                     code = 200
-                token = accounts.create_session(user["email"])
+                if self.path in ("/api/auth/signup", "/api/auth/reset-password"):
+                    user = self._deliver_recovery_code(user)
+                if self.path != "/api/auth/reset-password":
+                    token = accounts.create_session(user["email"])
             except DuplicateAccountError as error:
                 return self._send(409, {"error": str(error)})
             except InvalidCredentialsError as error:
                 return self._send(401, {"error": str(error)})
             except (AccountError, ValueError, UnicodeDecodeError) as error:
                 return self._send(400, {"error": str(error)})
-            return self._send(code, user, headers=(self._session_cookie(token, SESSION_TTL),))
+            headers = ()
+            if self.path != "/api/auth/reset-password":
+                headers = (self._session_cookie(token, SESSION_TTL),)
+            return self._send(code, user, headers=headers)
 
         def log_message(self, *args):
             pass
@@ -107,7 +135,8 @@ def main():
     host = os.environ.get("TRADEAPP_HOST", "0.0.0.0")
     db_path = os.environ.get("TRADEAPP_DB", "tradeapp.sqlite3")
     accounts = AccountStore(db_path)
-    server = ThreadingHTTPServer((host, port), make_handler(accounts))
+    mailer = RecoveryEmailer.from_environment()
+    server = ThreadingHTTPServer((host, port), make_handler(accounts, mailer))
     print(f"TradeApp running at http://127.0.0.1:{port}")
     server.serve_forever()
 

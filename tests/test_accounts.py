@@ -26,11 +26,40 @@ class AccountStoreTest(unittest.TestCase):
         self.assertEqual(str(Pubkey.from_string(user["walletAddress"])), user["walletAddress"])
 
         token = self.store.create_session(user["email"])
-        self.assertEqual(self.store.get_session(token), user)
-        self.assertEqual(self.store.login("PERSON@example.com", "correct horse battery"), user)
+        account = {"email": user["email"], "walletAddress": user["walletAddress"]}
+        self.assertEqual(self.store.get_session(token), account)
+        self.assertEqual(self.store.login("PERSON@example.com", "correct horse battery"), account)
 
         self.store.delete_session(token)
         self.assertIsNone(self.store.get_session(token))
+
+    def test_reset_password_preserves_wallet_and_rotates_recovery_code(self):
+        user = self.store.signup("person@example.com", "correct horse battery")
+        old_token = self.store.create_session(user["email"])
+
+        reset = self.store.reset_password(
+            user["email"], user["recoveryCode"], "a newer correct password"
+        )
+        self.assertEqual(reset["walletAddress"], user["walletAddress"])
+        self.assertNotEqual(reset["recoveryCode"], user["recoveryCode"])
+        self.assertIsNone(self.store.get_session(old_token))
+        with self.assertRaises(InvalidCredentialsError):
+            self.store.login(user["email"], "correct horse battery")
+        self.assertEqual(
+            self.store.login(user["email"], "a newer correct password")["walletAddress"],
+            user["walletAddress"],
+        )
+        with self.assertRaises(InvalidCredentialsError):
+            self.store.reset_password(
+                user["email"], user["recoveryCode"], "yet another correct password"
+            )
+
+    def test_reset_password_rejects_wrong_recovery_code(self):
+        user = self.store.signup("person@example.com", "correct horse battery")
+        with self.assertRaises(InvalidCredentialsError):
+            self.store.reset_password(
+                user["email"], "x" * len(user["recoveryCode"]), "a newer correct password"
+            )
 
     def test_duplicate_email_and_invalid_password(self):
         self.store.signup("person@example.com", "correct horse battery")

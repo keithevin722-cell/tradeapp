@@ -15,10 +15,21 @@ from tradeapp.server import make_handler
 
 
 class AuthApiTest(unittest.TestCase):
+    class RecordingMailer:
+        def __init__(self):
+            self.messages = []
+
+        def send_recovery_code(self, recipient, recovery_code):
+            self.messages.append((recipient, recovery_code))
+            return True
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         store = AccountStore(Path(self.temp_dir.name) / "accounts.sqlite3")
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store))
+        self.mailer = self.RecordingMailer()
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(store, self.mailer)
+        )
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
@@ -50,7 +61,11 @@ class AuthApiTest(unittest.TestCase):
         })
         self.assertEqual(status, 201)
         self.assertEqual(str(Pubkey.from_string(user["walletAddress"])), user["walletAddress"])
-        self.assertEqual(self.request("/api/auth/me"), (200, user))
+        self.assertTrue(user["recoveryEmailSent"])
+        self.assertNotIn("recoveryCode", user)
+        status, account = self.request("/api/auth/me")
+        self.assertEqual(status, 200)
+        self.assertEqual(account, {"email": user["email"], "walletAddress": user["walletAddress"]})
 
         status, _ = self.request("/api/auth/logout", {})
         self.assertEqual(status, 200)
@@ -67,6 +82,33 @@ class AuthApiTest(unittest.TestCase):
             })
         self.assertEqual(error.exception.code, 401)
         error.exception.close()
+
+    def test_password_reset_keeps_wallet_and_invalidates_session(self):
+        _, user = self.request("/api/auth/signup", {
+            "email": "person@example.com",
+            "password": "correct horse battery",
+        })
+        _, reset = self.request("/api/auth/reset-password", {
+            "email": user["email"],
+            "recoveryCode": self.mailer.messages[-1][1],
+            "newPassword": "a newer correct password",
+        })
+        self.assertEqual(reset["walletAddress"], user["walletAddress"])
+        self.assertTrue(reset["recoveryEmailSent"])
+        self.assertNotIn("recoveryCode", reset)
+        self.assertNotEqual(self.mailer.messages[-1][1], self.mailer.messages[-2][1])
+
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/api/auth/me")
+        self.assertEqual(error.exception.code, 401)
+        error.exception.close()
+
+        _, logged_in = self.request("/api/auth/login", {
+            "email": user["email"],
+            "password": "a newer correct password",
+        })
+        self.assertEqual(logged_in["walletAddress"], user["walletAddress"])
+        self.assertNotIn("recoveryCode", logged_in)
 
 
 if __name__ == "__main__":
